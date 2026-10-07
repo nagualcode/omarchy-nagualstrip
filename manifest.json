@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "nagualcode.nagualstrip",
+  "name": "Nagual Strip",
+  "version": "1.0.0",
+  "author": "nagual",
+  "license": "MIT",
+  "description": "Floating workspace strip (bottom-center) with workspace cards, a right-click configuration popup, a smart MRU-ranked app grid and an opt-in bottom hover edge, in one masked, click-through surface.",
+  "kinds": [
+    "panel"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "panel": "NagualStrip.qml"
+  }
+}

@@ -318,6 +318,16 @@ Item {
     }
   }
 
+  function focusWindowByAddress(addr) {
+    var expr = 'hl.dsp.focus({ window = "address:' + String(addr || "") + '" })'
+    Quickshell.execDetached(["hyprctl", "dispatch", expr])
+  }
+
+  function closeWindowByAddress(addr) {
+    var expr = 'hl.dsp.window.close({ window = "address:' + String(addr || "") + '" })'
+    Quickshell.execDetached(["hyprctl", "dispatch", expr])
+  }
+
   // ========================================================================
   //  NEON GLOW (workspace strip)
   // ========================================================================
@@ -384,6 +394,46 @@ Item {
     onTriggered: root.neonTick()
   }
 
+  // ---- Workspaces mini menu for windows in workspace ---------------------
+  property bool wsWindowMenuOpen: false
+  property var wsWindowMenuWs: null
+  property int wsWindowMenuX: 0
+  property int wsWindowMenuY: 0
+
+  function openWsWindowMenu(ws, mouse) {
+    root.wsWindowMenuWs = ws
+    root.wsWindowMenuOpen = true
+    if (mouse) {
+      var x = mouse.x - wsWindowMenuW / 2
+      var y = mouse.y - 20
+      root.wsWindowMenuX = Math.max(0, Math.min(panel.width - root.wsWindowMenuW, x))
+      root.wsWindowMenuY = Math.max(0, Math.min(panel.height - Math.min(wsWindowMenuH, Style.space(260)) - 10, y))
+    }
+    wsWindowMenuPeel.restart()
+  }
+
+  function closeWsWindowMenu() {
+    if (!root.wsWindowMenuOpen) return
+    root.wsWindowMenuOpen = false
+    root.wsWindowMenuWs = null
+    wsWindowMenuPeel.stop()
+    root.restartWorkspacesHideTimer()
+  }
+
+  function dismissWsWindowMenu() {
+    root.closeWsWindowMenu()
+  }
+
+  Timer {
+    id: wsWindowMenuPeel
+    interval: 6000
+    repeat: false
+    onTriggered: root.closeWsWindowMenu()
+  }
+
+  readonly property int wsWindowMenuW: Style.space(280)
+  readonly property int wsWindowMenuH: Style.space(200)
+
   // ---- Workspaces configuration popup ------------------------------------
   // Opened by right-clicking the strip background. The sliders apply live and
   // commit to shell.json on release (same write path as grid reordering).
@@ -392,6 +442,7 @@ Item {
   function toggleWsConfig() { root.wsConfigOpen ? root.closeWsConfig() : root.openWsConfig() }
 
   function openWsConfig() {
+    root.closeWsWindowMenu()
     root.wsConfigOpen = true
     wsConfigPeel.restart()
   }
@@ -730,7 +781,7 @@ Item {
   }
 
   function restartWorkspacesHideTimer() {
-    if (!root.wsAutoHide || root.wsConfigOpen || root.wsAlwaysVisible) { wsHideTimer.stop(); return }
+    if (!root.wsAutoHide || root.wsConfigOpen || root.wsAlwaysVisible || root.wsWindowMenuOpen) { wsHideTimer.stop(); return }
     if (stripHover.hovered) wsHideTimer.stop()
     else wsHideTimer.restart()
   }
@@ -777,6 +828,7 @@ Item {
   // hl.dispatch wrap).
   function focusWorkspace(ws) {
     root.closeWsConfig()
+    root.closeWsWindowMenu()
     if (!ws) return
     var target = (ws.name && String(ws.name).length > 0) ? String(ws.name) : String(ws.id)
     if (root.wsInstantSwitch) {
@@ -946,6 +998,7 @@ Item {
     // The two popups are modal in different ways and would fight over the same
     // full-screen mask, so opening one closes the other.
     root.closeWsConfig()
+    root.closeWsWindowMenu()
     root.appMenuOpened = true
   }
 
@@ -1058,8 +1111,17 @@ Item {
       Region { x: root.wsConfigPopupX; y: root.wsConfigPopupY; width: root.wsConfigOpen ? root.wsConfigPopupW : 0; height: root.wsConfigOpen ? root.wsConfigPopupH : 0 }
       // fullscreen block while the config popup is open (outside clicks dismiss it)
       Region { x: 0; y: 0; width: root.wsConfigOpen ? panel.width : 0; height: root.wsConfigOpen ? panel.height : 0 }
-      // optional bottom edge (opt-in)
-      Region { x: 0; y: root.wsEdgeEnabled ? panel.height - root.wsEdgeHeight : panel.height; width: root.wsEdgeEnabled ? panel.width : 0; height: root.wsEdgeEnabled ? root.wsEdgeHeight : 0 }
+      // workspace window menu
+      Region { x: root.wsWindowMenuX; y: root.wsWindowMenuY; width: root.wsWindowMenuOpen ? root.wsWindowMenuW : 0; height: root.wsWindowMenuOpen ? root.wsWindowMenuH : 0 }
+      // fullscreen block while window menu open
+      Region { x: 0; y: 0; width: root.wsWindowMenuOpen ? panel.width : 0; height: root.wsWindowMenuOpen ? panel.height : 0 }
+      // optional bottom edge (opt-in) or auto-hide trigger zone
+      Region {
+        x: root.wsEdgeEnabled ? 0 : (root.wsAutoHide && !root.wsAlwaysVisible && !root.workspacesOpened ? Math.max(0, (panel.width - Math.min(panel.width, Math.max(Style.space(160), panel.width * 0.35))) / 2) : 0)
+        y: root.wsEdgeEnabled ? panel.height - root.wsEdgeHeight : (root.wsAutoHide && !root.wsAlwaysVisible && !root.workspacesOpened ? Math.max(0, panel.height - root.wsEdgeHeight * 4) : panel.height)
+        width: root.wsEdgeEnabled ? panel.width : (root.wsAutoHide && !root.wsAlwaysVisible && !root.workspacesOpened ? Math.min(panel.width, Math.max(Style.space(160), panel.width * 0.35)) : 0)
+        height: root.wsEdgeEnabled ? root.wsEdgeHeight : (root.wsAutoHide && !root.wsAlwaysVisible && !root.workspacesOpened ? root.wsEdgeHeight * 4 : 0)
+      }
     }
 
     // ---- Workspaces float strip (bottom-right) ----
@@ -1083,12 +1145,38 @@ Item {
         NumberAnimation { duration: root.effectivePanelAnimMs; easing.type: Easing.OutCubic }
       }
 
-      // Right-click anywhere on the strip background brings up its
-      // configuration (size / transparency / auto-hide).
+      // Right-click only on strip background (not on workspace icons/cards or buttons)
+      // brings up its configuration (size / transparency / auto-hide).
       MouseArea {
         anchors.fill: parent
         acceptedButtons: Qt.RightButton
-        onClicked: root.toggleWsConfig()
+        propagateComposedEvents: true
+        onClicked: function(mouse) {
+          var rowTop = strip.y + root.wsOuterPad
+          var rowBottom = rowTop + root.wsCardPreviewH
+          var localY = mouse.y
+          var inRowVertical = (localY >= rowTop && localY <= rowBottom)
+          if (inRowVertical) {
+            var row = stripRow
+            var localX = mouse.x
+            var inRow = (localX >= row.x && localX <= row.x + row.width)
+            if (inRow) {
+              mouse.accepted = false
+              return
+            }
+          }
+          var arrow = wsArrow
+          if (arrow.visible) {
+            var inArrow = (localY >= arrow.y && localY <= arrow.y + arrow.height &&
+                          localX >= arrow.x && localX <= arrow.x + arrow.width)
+            if (inArrow) {
+              mouse.accepted = false
+              return
+            }
+          }
+          root.toggleWsConfig()
+          mouse.accepted = true
+        }
       }
 
       // Keep the overview open while the pointer is over it, so a click can
@@ -1102,6 +1190,7 @@ Item {
       }
 
       Row {
+        id: stripRow
         anchors.top: parent.top
         anchors.topMargin: root.wsOuterPad
         anchors.horizontalCenter: parent.horizontalCenter
@@ -1559,38 +1648,136 @@ Item {
       }
     }
 
-    // ---- Smart app menu ----
-    // Fills the window so its own outside-click catcher reaches every corner
-    // and its geometry can be read for the mask above. Above the strip and the
-    // configuration popup, both of which it dismisses on the way out.
-    AppLauncherMenu {
-      id: appMenu
-      z: 8
-      anchors.fill: parent
-      appLibrary: root.appLibrary
-      open: root.appMenuOpened
-      // The menu shares the strip's surface: same opacity (the strip's own
-      // transparency setting) and same border family, neon included.
-      surfaceOpacity: root.wsOpacity
-      neonEnabled: root.wsNeonEnabled
-      neonGlow: root.wsNeonGlow
-      accentColor: root.wsStripAccent
-      rowsLimit: root.appMenuRows
-      stripTop: root.stripY
-      onDismissRequested: root.closeAppMenu()
-    }
-
-    // ---- Optional bottom edge (opt-in) ----
-    Item {
-      visible: root.wsEdgeEnabled
-      anchors.bottom: parent.bottom
-      anchors.left: parent.left
-      anchors.right: parent.right
-      height: root.wsEdgeHeight
-      HoverHandler {
-        onHoveredChanged: if (hovered && root.ready) root.showWorkspaces()
+      // ---- Workspace window list menu (mini) ----
+      MouseArea {
+        anchors.fill: parent
+        z: 11
+        visible: root.wsWindowMenuOpen
+        onClicked: root.dismissWsWindowMenu()
       }
-    }
+
+      BorderSurface {
+        id: wsWindowMenu
+        z: 13
+        visible: root.wsWindowMenuOpen
+        x: root.wsWindowMenuX
+        y: root.wsWindowMenuY
+        width: root.wsWindowMenuW
+        height: Math.min(root.wsWindowMenuH, Style.space(260))
+        radius: root.cornerRadius
+        color: Util.alpha(Color.popups.background, root.wsOpacity)
+        borderSpec: Border.surfaceSpec("popups", "border", Color.popups.border, Math.max(1, Style.space(2)))
+
+        Column {
+          anchors.fill: parent
+          anchors.margins: Style.space(8)
+          spacing: Style.space(4)
+
+          Text {
+            width: parent.width
+            text: "Windows"
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: true
+            color: Color.popups.text
+          }
+
+          ListView {
+            width: parent.width
+            height: parent.height - Style.space(20)
+            model: root.wsWindowMenuWs ? root.wsWindowMenuWs.windows : []
+            clip: true
+            delegate: Item {
+              width: ListView.view.width
+              height: Style.space(24)
+
+              property var w: modelData
+              Text {
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(4)
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - Style.space(10)
+                elide: Text.ElideRight
+                text: w.title || w.appId || "Window"
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                color: Color.popups.text
+                MouseArea {
+                  anchors.fill: parent
+                  acceptedButtons: Qt.LeftButton | Qt.RightButton
+                  onClicked: function(mouse) {
+                    if (mouse.button === Qt.RightButton) {
+                      if (modelData && modelData.address) {
+                        root.closeWindowByAddress(modelData.address)
+                      }
+                      root.closeWsWindowMenu()
+                      mouse.accepted = true
+                      return
+                    }
+                    if (modelData && modelData.address) {
+                      root.focusWindowByAddress(modelData.address)
+                    } else {
+                      root.focusWorkspace(root.wsWindowMenuWs)
+                    }
+                    root.closeWsWindowMenu()
+                    mouse.accepted = true
+                  }
+                }
+              }
+
+                Item {
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: Style.space(16)
+                  height: Style.space(16)
+                }
+            }
+          }
+        }
+      }
+
+      // ---- Smart app menu ----
+      // Fills the window so its own outside-click catcher reaches every corner
+      // and its geometry can be read for the mask above. Above the strip and the
+      // configuration popup, both of which it dismisses on the way out.
+      AppLauncherMenu {
+        id: appMenu
+        z: 8
+        anchors.fill: parent
+        appLibrary: root.appLibrary
+        open: root.appMenuOpened
+        // The menu shares the strip's surface: same opacity (the strip's own
+        // transparency setting) and same border family, neon included.
+        surfaceOpacity: root.wsOpacity
+        neonEnabled: root.wsNeonEnabled
+        neonGlow: root.wsNeonGlow
+        accentColor: root.wsStripAccent
+        rowsLimit: root.appMenuRows
+        stripTop: root.stripY
+        onDismissRequested: root.closeAppMenu()
+      }
+
+    // ---- Optional bottom edge / auto-hide trigger ----
+      Item {
+        visible: root.wsAutoHide && !root.wsAlwaysVisible
+        anchors.bottom: parent.bottom
+        anchors.horizontalCenter: parent.horizontalCenter
+        width: Math.min(panel.width, Math.max(Style.space(160), panel.width * 0.35))
+        height: root.wsEdgeHeight * 4
+        HoverHandler {
+          onHoveredChanged: if (hovered && root.ready) root.showWorkspaces()
+        }
+      }
+      Item {
+        visible: root.wsEdgeEnabled
+        anchors.bottom: parent.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: root.wsEdgeHeight
+        HoverHandler {
+          onHoveredChanged: if (hovered && root.ready) root.showWorkspaces()
+        }
+      }
 
     // ---- Keyboard routing (app grid) ----
     Item {
@@ -2059,7 +2246,10 @@ Item {
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
         acceptedButtons: Qt.LeftButton
-        onClicked: wcard.activate(wcard.ws)
+        onClicked: function(mouse) {
+          // Left click on workspace card: show window list mini menu
+          root.openWsWindowMenu(wcard.ws, mouse)
+        }
       }
     }
   }

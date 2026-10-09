@@ -89,11 +89,15 @@ function buildWorkspaces() {
       if (!tl) continue
       var g = windowGeometry(tl, monitor)
       var wayland = tl.wayland ? tl.wayland : null
+      var addr = ""
+      if (tl && tl.address) addr = String(tl.address)
+      else if (tl && tl.lastIpcObject && tl.lastIpcObject.address) addr = String(tl.lastIpcObject.address)
       windows.push({
         title: titleOf(tl),
         initialTitle: initialTitleOf(tl),
         appId: appIdOf(wayland),
         wayland: wayland,
+        address: addr,
         x: g.x, y: g.y, w: g.w, h: g.h,
         noGeo: !g.known,
         // Card-space cascade for windows whose IPC geometry never arrived,

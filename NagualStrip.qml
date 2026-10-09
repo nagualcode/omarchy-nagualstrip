@@ -457,7 +457,7 @@ Item {
   }
 
   readonly property int wsWindowMenuW: Style.space(280)
-  readonly property int wsWindowMenuH: Style.space(200)
+  readonly property int wsWindowMenuH: Style.space(200) // kept for reference
 
   // ---- Workspaces configuration popup ------------------------------------
   // Opened by right-clicking the strip background. The sliders apply live and
@@ -1137,7 +1137,17 @@ Item {
       // fullscreen block while the config popup is open (outside clicks dismiss it)
       Region { x: 0; y: 0; width: root.wsConfigOpen ? panel.width : 0; height: root.wsConfigOpen ? panel.height : 0 }
       // workspace window menu
-      Region { x: root.wsWindowMenuX; y: root.wsWindowMenuY; width: root.wsWindowMenuOpen ? root.wsWindowMenuW : 0; height: root.wsWindowMenuOpen ? root.wsWindowMenuH : 0 }
+      Region {
+        x: root.wsWindowMenuX
+        y: root.wsWindowMenuY
+        width: root.wsWindowMenuOpen ? root.wsWindowMenuW : 0
+        height: root.wsWindowMenuOpen ? ((function(){
+          var ws = root.wsWindowMenuWs
+          var count = ws && ws.windows ? ws.windows.length : 0
+          var h = count * Style.space(24) + Style.space(16)
+          return Math.min(h, Style.space(320))
+        })()) : 0
+      }
       // fullscreen block while window menu open
       Region { x: 0; y: 0; width: root.wsWindowMenuOpen ? panel.width : 0; height: root.wsWindowMenuOpen ? panel.height : 0 }
       // optional bottom edge (opt-in) or auto-hide trigger zone

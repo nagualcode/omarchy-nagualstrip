@@ -328,6 +328,19 @@ Item {
     Quickshell.execDetached(["hyprctl", "dispatch", expr])
   }
 
+  function formatWindowLabel(w) {
+    if (!w) return "Window"
+    var appId = String(w.appId || "").trim()
+    var title = String(w.title || "").trim()
+    var initialTitle = String(w.initialTitle || "").trim()
+    var displayTitle = title.length > 0 ? title : (initialTitle.length > 0 ? initialTitle : appId)
+    if (appId.length > 0 && displayTitle.length > 0 && displayTitle !== appId) {
+      return "(" + appId + ") " + displayTitle
+    }
+    if (appId.length > 0) return "(" + appId + ") " + appId
+    return displayTitle.length > 0 ? displayTitle : "Window"
+  }
+
   // ========================================================================
   //  NEON GLOW (workspace strip)
   // ========================================================================
@@ -1684,18 +1697,9 @@ Item {
           anchors.margins: Style.space(8)
           spacing: Style.space(4)
 
-          Text {
-            width: parent.width
-            text: "Windows"
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            font.bold: true
-            color: Color.popups.text
-          }
-
           ListView {
             width: parent.width
-            height: parent.height - Style.space(20)
+            height: parent.height - Style.space(4)
             model: root.wsWindowMenuWs ? root.wsWindowMenuWs.windows : []
             clip: true
             delegate: Item {
@@ -1709,7 +1713,7 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 width: parent.width - Style.space(10)
                 elide: Text.ElideRight
-                text: w.title || w.appId || "Window"
+                text: formatWindowLabel(w)
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
                 color: Color.popups.text

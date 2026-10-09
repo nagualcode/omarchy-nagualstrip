@@ -403,12 +403,23 @@ Item {
   function openWsWindowMenu(ws, mouse) {
     root.wsWindowMenuWs = ws
     root.wsWindowMenuOpen = true
-    if (mouse) {
-      var x = mouse.x - wsWindowMenuW / 2
-      var y = mouse.y - 20
-      root.wsWindowMenuX = Math.max(0, Math.min(panel.width - root.wsWindowMenuW, x))
-      root.wsWindowMenuY = Math.max(0, Math.min(panel.height - Math.min(wsWindowMenuH, Style.space(260)) - 10, y))
+    // Position near top edge of strip, aligned with clicked card/icon
+    var stripTop = root.stripY
+    var cardWidth = root.effectiveWsCardWidth
+    var gap = root.wsCardGap
+    var lead = root.wsLeadingCells
+    var idx = -1
+    for (var i = 0; i < root.workspaces.length; i++) {
+      if (Number(root.workspaces[i].id) === Number(ws.id)) { idx = i; break }
     }
+    var rowW = (root.workspaces.length + lead + (root.wsShowNewWs ? 1 : 0)) * cardWidth + Math.max(0, (root.workspaces.length + lead + (root.wsShowNewWs ? 1 : 0)) - 1) * gap
+    var rowX = (root.stripW - rowW) / 2
+    var cardX = rowX + (lead + Math.max(0, idx)) * (cardWidth + gap) - cardWidth / 2 // centered relative? no - left of card
+    var cardLeft = rowX + (lead + Math.max(0, idx)) * (cardWidth + gap)
+    var menuX = root.stripX + cardLeft
+    var menuY = stripTop - Math.min(root.wsWindowMenuH, Style.space(260)) - Style.space(4)
+    root.wsWindowMenuX = Math.max(0, Math.min(panel.width - root.wsWindowMenuW, menuX))
+    root.wsWindowMenuY = Math.max(0, Math.min(panel.height - Math.min(root.wsWindowMenuH, Style.space(260)) - 10, menuY))
     wsWindowMenuPeel.restart()
   }
 
@@ -2245,10 +2256,15 @@ Item {
         anchors.fill: parent
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
-        acceptedButtons: Qt.LeftButton
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
         onClicked: function(mouse) {
-          // Left click on workspace card: show window list mini menu
-          root.openWsWindowMenu(wcard.ws, mouse)
+          if (mouse.button === Qt.RightButton) {
+            root.openWsWindowMenu(wcard.ws, mouse)
+            mouse.accepted = true
+            return
+          }
+          wcard.activate(wcard.ws)
+          mouse.accepted = true
         }
       }
     }

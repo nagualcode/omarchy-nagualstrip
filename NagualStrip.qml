@@ -416,7 +416,7 @@ Item {
   function openWsWindowMenu(ws, mouse) {
     root.wsWindowMenuWs = ws
     root.wsWindowMenuOpen = true
-    // Position near top edge of strip, aligned with clicked card/icon
+    // Position near top edge of strip, aligned with clicked card/icon - center menu on card
     var stripTop = root.stripY
     var cardWidth = root.effectiveWsCardWidth
     var gap = root.wsCardGap
@@ -427,12 +427,13 @@ Item {
     }
     var rowW = (root.workspaces.length + lead + (root.wsShowNewWs ? 1 : 0)) * cardWidth + Math.max(0, (root.workspaces.length + lead + (root.wsShowNewWs ? 1 : 0)) - 1) * gap
     var rowX = (root.stripW - rowW) / 2
-    var cardX = rowX + (lead + Math.max(0, idx)) * (cardWidth + gap) - cardWidth / 2 // centered relative? no - left of card
     var cardLeft = rowX + (lead + Math.max(0, idx)) * (cardWidth + gap)
-    var menuX = root.stripX + cardLeft
-    var menuY = stripTop - Math.min(root.wsWindowMenuH, Style.space(260)) - Style.space(4)
+    var menuX = root.stripX + cardLeft + cardWidth / 2 - root.wsWindowMenuW / 2
+    var count = ws && ws.windows ? ws.windows.length : 0
+    var menuH = Math.min(count * Style.space(24) + Style.space(16), Style.space(320))
+    var menuY = stripTop - menuH - Style.space(4)
     root.wsWindowMenuX = Math.max(0, Math.min(panel.width - root.wsWindowMenuW, menuX))
-    root.wsWindowMenuY = Math.max(0, Math.min(panel.height - Math.min(root.wsWindowMenuH, Style.space(260)) - 10, menuY))
+    root.wsWindowMenuY = Math.max(0, Math.min(panel.height - menuH - 10, menuY))
     wsWindowMenuPeel.restart()
   }
 
@@ -1687,7 +1688,12 @@ Item {
         x: root.wsWindowMenuX
         y: root.wsWindowMenuY
         width: root.wsWindowMenuW
-        height: Math.min(root.wsWindowMenuH, Style.space(260))
+        height: {
+          var ws = root.wsWindowMenuWs
+          var count = ws && ws.windows ? ws.windows.length : 0
+          var h = count * Style.space(24) + Style.space(16)
+          return Math.min(h, Style.space(320))
+        }
         radius: root.cornerRadius
         color: Util.alpha(Color.popups.background, root.wsOpacity)
         borderSpec: Border.surfaceSpec("popups", "border", Color.popups.border, Math.max(1, Style.space(2)))
@@ -1695,57 +1701,54 @@ Item {
         Column {
           anchors.fill: parent
           anchors.margins: Style.space(8)
-          spacing: Style.space(4)
+          spacing: Style.space(2)
 
           ListView {
             width: parent.width
-            height: parent.height - Style.space(4)
+            height: parent.height
             model: root.wsWindowMenuWs ? root.wsWindowMenuWs.windows : []
             clip: true
-            delegate: Item {
+            delegate: Rectangle {
               width: ListView.view.width
               height: Style.space(24)
+              radius: Style.space(4)
+              color: menuMouseArea.containsMouse ? Util.alpha(Color.accent, 0.12) : "transparent"
 
               property var w: modelData
               Text {
                 anchors.left: parent.left
                 anchors.leftMargin: Style.space(4)
                 anchors.verticalCenter: parent.verticalCenter
-                width: parent.width - Style.space(10)
+                width: parent.width - Style.space(8)
                 elide: Text.ElideRight
                 text: formatWindowLabel(w)
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
                 color: Color.popups.text
-                MouseArea {
-                  anchors.fill: parent
-                  acceptedButtons: Qt.LeftButton | Qt.RightButton
-                  onClicked: function(mouse) {
-                    if (mouse.button === Qt.RightButton) {
-                      if (modelData && modelData.address) {
-                        root.closeWindowByAddress(modelData.address)
-                      }
-                      root.closeWsWindowMenu()
-                      mouse.accepted = true
-                      return
-                    }
+              }
+              MouseArea {
+                id: menuMouseArea
+                anchors.fill: parent
+                hoverEnabled: true
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                onClicked: function(mouse) {
+                  if (mouse.button === Qt.RightButton) {
                     if (modelData && modelData.address) {
-                      root.focusWindowByAddress(modelData.address)
-                    } else {
-                      root.focusWorkspace(root.wsWindowMenuWs)
+                      root.closeWindowByAddress(modelData.address)
                     }
                     root.closeWsWindowMenu()
                     mouse.accepted = true
+                    return
                   }
+                  if (modelData && modelData.address) {
+                    root.focusWindowByAddress(modelData.address)
+                  } else {
+                    root.focusWorkspace(root.wsWindowMenuWs)
+                  }
+                  root.closeWsWindowMenu()
+                  mouse.accepted = true
                 }
               }
-
-                Item {
-                  anchors.right: parent.right
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: Style.space(16)
-                  height: Style.space(16)
-                }
             }
           }
         }

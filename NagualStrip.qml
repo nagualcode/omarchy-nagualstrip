@@ -319,12 +319,14 @@ Item {
   }
 
   function focusWindowByAddress(addr) {
-    var expr = 'hl.dsp.focus({ window = "address:' + root.luaStringLiteral(String(addr || "")) + '" })'
+    var a = String(addr || "")
+    var expr = 'hl.dsp.focus({ window = "address:' + a + '" })'
     Quickshell.execDetached(["hyprctl", "eval", expr])
   }
 
   function closeWindowByAddress(addr) {
-    var expr = 'hl.dsp.window.close({ window = "address:' + root.luaStringLiteral(String(addr || "")) + '" })'
+    var a = String(addr || "")
+    var expr = 'hl.dsp.window.close({ window = "address:' + a + '" })'
     Quickshell.execDetached(["hyprctl", "eval", expr])
   }
 

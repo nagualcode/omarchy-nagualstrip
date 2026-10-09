@@ -319,13 +319,13 @@ Item {
   }
 
   function focusWindowByAddress(addr) {
-    var expr = 'hl.dsp.focus({ window = "address:' + String(addr || "") + '" })'
-    Quickshell.execDetached(["hyprctl", "dispatch", expr])
+    var expr = 'hl.dsp.focus({ window = "address:' + root.luaStringLiteral(String(addr || "")) + '" })'
+    Quickshell.execDetached(["hyprctl", "eval", expr])
   }
 
   function closeWindowByAddress(addr) {
-    var expr = 'hl.dsp.window.close({ window = "address:' + String(addr || "") + '" })'
-    Quickshell.execDetached(["hyprctl", "dispatch", expr])
+    var expr = 'hl.dsp.window.close({ window = "address:' + root.luaStringLiteral(String(addr || "")) + '" })'
+    Quickshell.execDetached(["hyprctl", "eval", expr])
   }
 
   function formatWindowLabel(w) {
@@ -1719,38 +1719,43 @@ Item {
             model: root.wsWindowMenuWs ? root.wsWindowMenuWs.windows : []
             clip: true
             delegate: Rectangle {
+              id: itemRect
               width: ListView.view.width
               height: Style.space(24)
               radius: Style.space(4)
-              color: menuMouseArea.containsMouse ? Util.alpha(Color.accent, 0.12) : "transparent"
-
               property var w: modelData
+              color: itemMouse.containsMouse ? Util.alpha(Color.accent, 0.12) : "transparent"
+
               Text {
                 anchors.left: parent.left
                 anchors.leftMargin: Style.space(4)
                 anchors.verticalCenter: parent.verticalCenter
                 width: parent.width - Style.space(8)
                 elide: Text.ElideRight
-                text: formatWindowLabel(w)
+                text: formatWindowLabel(itemRect.w)
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
                 color: Color.popups.text
               }
               MouseArea {
-                id: menuMouseArea
+                id: itemMouse
                 anchors.fill: parent
                 hoverEnabled: true
                 acceptedButtons: Qt.LeftButton | Qt.RightButton
                 onClicked: function(mouse) {
                   if (mouse.button === Qt.RightButton) {
-                    if (modelData && modelData.address) {
+                    if (w && w.address) {
+                      root.closeWindowByAddress(w.address)
+                    } else if (modelData && modelData.address) {
                       root.closeWindowByAddress(modelData.address)
                     }
                     root.closeWsWindowMenu()
                     mouse.accepted = true
                     return
                   }
-                  if (modelData && modelData.address) {
+                  if (w && w.address) {
+                    root.focusWindowByAddress(w.address)
+                  } else if (modelData && modelData.address) {
                     root.focusWindowByAddress(modelData.address)
                   } else {
                     root.focusWorkspace(root.wsWindowMenuWs)

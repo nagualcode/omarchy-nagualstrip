@@ -319,16 +319,30 @@ Item {
     }
   }
 
+  // Quickshell reports toplevel addresses without the "0x" prefix, while the
+  // Hyprland dispatchers expect "address:0x...". Normalize before building the
+  // window selector so the address always matches.
+  function windowAddressSelector(addr) {
+    var a = String(addr || "").trim()
+    if (a.length > 0 && a.slice(0, 2).toLowerCase() !== "0x") a = "0x" + a
+    return "address:" + a
+  }
+
   function focusWindowByAddress(addr) {
-    var a = String(addr || "")
-    var expr = 'hl.dsp.focus({ window = "address:' + a + '" })'
-    Quickshell.execDetached(["hyprctl", "eval", expr])
+    var sel = root.windowAddressSelector(addr)
+    // Focusing a window does not raise it: a floating window selected from the
+    // strip would stay behind the other floats. Focus, then lift the (now
+    // active) window to the top. One eval runs both dispatches in order; the
+    // pcall guard keeps a stale address from aborting the chain.
+    var lua = 'pcall(hl.dispatch, hl.dsp.focus({ window = "' + root.luaStringLiteral(sel) + '" }))'
+      + ' pcall(hl.dispatch, hl.dsp.window.bring_to_top())'
+    Quickshell.execDetached(["hyprctl", "eval", lua])
   }
 
   function closeWindowByAddress(addr) {
-    var a = String(addr || "")
-    var expr = 'hl.dsp.window.close({ window = "address:' + a + '" })'
-    Quickshell.execDetached(["hyprctl", "eval", expr])
+    var sel = root.windowAddressSelector(addr)
+    var expr = 'hl.dsp.window.close({ window = "' + root.luaStringLiteral(sel) + '" })'
+    Quickshell.execDetached(["hyprctl", "dispatch", expr])
   }
 
   function formatWindowLabel(w) {

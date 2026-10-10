@@ -5,7 +5,7 @@ Floating workspace switcher with workspace cards, window list, settings, and sma
 ## Features
 
 - **Workspace strip (bottom-center)** - Centered on focused screen with live workspace previews.
-- **Right-click workspace card** - Opens mini menu listing all windows in that workspace. Left-click a window name to focus workspace and that window. Right-click a window name to close it.
+- **Right-click workspace card** - Opens a mini menu listing every window in that workspace. Left-click a window to switch to its workspace, focus it and raise it to the top (a floating window comes forward over the others). Right-click a window to close it.
 - **Right-click strip background** - Opens configuration (only on empty background, not on icons/cards).
 - **Auto-hide** - Hides by default; hovering bottom-center edge shows it. Works standalone.
 - **Pinned mode** - Set `wsToggleEnabled: false` to keep it always visible.

@@ -62,7 +62,13 @@ function initialTitleOf(toplevel) {
 // One card per occupied workspace. Includes the focused flag, logical monitor
 // dimensions for the card aspect ratio, and a window list sorted in reading
 // order (top-to-bottom, then left-to-right) so tiles overlap correctly.
-function buildWorkspaces() {
+//
+// `onlyIds` (optional) is an object mapping workspace IDs to true, taken from
+// Hyprland itself. When given, a workspace is kept only if it is both in that
+// set and has toplevels in Quickshell's (possibly still-lagging) model. After
+// a reorder the two models briefly disagree; this guarantees an empty
+// workspace card is never painted, even from a stale toplevel list.
+function buildWorkspaces(onlyIds) {
   var values = (typeof Hyprland !== "undefined" && Hyprland.workspaces) ? Hyprland.workspaces.values : []
   var out = []
   for (var i = 0; i < values.length && i < MAX_WORKSPACES; i++) {
@@ -113,6 +119,7 @@ function buildWorkspaces() {
     windows.sort(function (a, b) { return a.y === b.y ? a.x - b.x : a.y - b.y })
 
     if (windows.length === 0) continue
+    if (onlyIds && !onlyIds[id]) continue
 
     out.push({
       id: id,

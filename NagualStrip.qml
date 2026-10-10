@@ -12,6 +12,7 @@ import qs.Commons
 import qs.Ui
 import "Workspaces.js" as WorkspaceModel
 import "IconModel.js" as IconModel
+import "WorkspaceReorder.js" as WorkspaceReorder
 
 // Nagual Strip — the floating workspace switcher.
 //
@@ -422,14 +423,9 @@ Item {
     var stripTop = root.stripY
     var cardWidth = root.effectiveWsCardWidth
     var gap = root.wsCardGap
-    var lead = root.wsLeadingCells
-    var idx = -1
-    for (var i = 0; i < root.workspaces.length; i++) {
-      if (Number(root.workspaces[i].id) === Number(ws.id)) { idx = i; break }
-    }
-    var rowW = (root.workspaces.length + lead + (root.wsShowNewWs ? 1 : 0)) * cardWidth + Math.max(0, (root.workspaces.length + lead + (root.wsShowNewWs ? 1 : 0)) - 1) * gap
-    var rowX = (root.stripW - rowW) / 2
-    var cardLeft = rowX + (lead + Math.max(0, idx)) * (cardWidth + gap)
+    var lead = root.wsVisibleLead
+    var idx = root.wsVisualIndex(ws.id)
+    var cardLeft = root.wsRowLeft + (lead + Math.max(0, idx)) * (cardWidth + gap)
     var menuX = root.stripX + cardLeft + cardWidth / 2 - root.wsWindowMenuW / 2
     var count = ws && ws.windows ? ws.windows.length : 0
     var menuH = Math.min(count * Style.space(24) + Style.space(16), Style.space(320))
@@ -568,6 +564,37 @@ Item {
   property bool modelDirty: true
   property bool geometryRefreshPending: false
   property bool geometryRefreshInFlight: false
+
+  // ---- Workspace drag-reorder state -------------------------------------
+  // `wsVisualOrder` is the left-to-right order of the cards as workspace IDs.
+  // It mirrors the model on every rebuild, but during a drag only this array is
+  // permuted: the Repeater model stays put so the pressed delegate (and its
+  // mouse grab) survives, and each card animates to the x of its slot. So the
+  // live "swap on hover" never recreates a delegate and never drops the drag.
+  property var wsVisualOrder: []
+  property bool wsDragging: false
+  property int wsDragCurrentVisual: -1
+  property bool wsDragMoved: false
+  // While a reorder is in flight the Hyprland models are mid-transition:
+  // rebuilding now would paint ghost/empty cards. This freezes rebuilds for the
+  // whole rename round-trip; the model is rebuilt once from Hyprland's own
+  // occupancy at the end.
+  property bool wsReorderLock: false
+  property int wsReorderFinalizePasses: 0
+  // Authoritative workspace occupancy straight from Hyprland (`hyprctl -j
+  // workspaces`, windows > 0). Used to suppress ghost workspaces that Quickshell
+  // leaves behind after a change_id, which it cannot track.
+  property var wsOccupiedIds: ({})
+  property bool wsOccupancyKnown: false
+  // Hyprland events that can change which workspaces hold windows; each one
+  // schedules a debounced occupancy probe.
+  readonly property var wsOccupancyEvents: [
+    "openwindow", "closewindow", "movewindow", "movewindowv2",
+    "moveworkspace", "moveworkspacev2", "workspace", "workspacev2",
+    "createworkspace", "createworkspacev2", "destroyworkspace", "destroyworkspacev2",
+    "changeworkspaceid", "focusedmon", "fullscreen", "pin", "minimize",
+    "changefloatingmode", "togglegroup", "moveintogroup", "moveoutofgroup"
+  ]
   property var desktopEntries: []
 
   // While the Omarchy screensaver (org.omarchy.screensaver) keeps a window on
@@ -590,6 +617,23 @@ Item {
     var trail = (n > 0 && root.wsShowNewWs) ? 1 : 0
     return lead + trail
   }
+
+  // Which leading launcher cells are actually rendered right now, and where the
+  // cards start. The strip row is laid out manually (see stripRow) so a card
+  // can slide between slots mid-drag without being recreated; these mirror what
+  // the old Row did implicitly.
+  readonly property bool wsAppMenuVisible: root.wsShowAppMenu && (root.wsAlwaysVisible || root.workspaces.length > 0)
+  readonly property bool wsOmafileVisible: root.wsShowOmafile && (root.wsAlwaysVisible || root.workspaces.length > 0)
+  readonly property int wsVisibleLead: (root.wsAppMenuVisible ? 1 : 0) + (root.wsOmafileVisible ? 1 : 0)
+  readonly property bool wsTrailVisible: root.wsShowNewWs && root.workspaces.length > 0
+  readonly property int wsRowCells: root.wsVisibleLead + root.workspaces.length + (root.wsTrailVisible ? 1 : 0)
+  readonly property real wsRowWidth: {
+    var n = root.wsRowCells
+    if (n <= 0) return 0
+    return n * root.effectiveWsCardWidth + (n - 1) * root.wsCardGap
+  }
+  // Left edge of the strip row inside the strip (the row is centred).
+  readonly property real wsRowLeft: Math.max(0, (root.stripW - root.wsRowWidth) / 2)
 
   readonly property int effectiveWsCardWidth: {
     var wsCount = root.workspaces.length
@@ -624,38 +668,33 @@ Item {
   readonly property int wsArrowH: Style.space(6)
   readonly property int wsArrowW: root.wsArrowH * 2
   readonly property int focusedWsIndex: {
-    var id = root.focusedWorkspaceId
-    if (id === null || id === undefined) return -1
-    for (var i = 0; i < root.workspaces.length; i++) {
-      if (Number(root.workspaces[i].id) === Number(id)) return i
-    }
-    return -1
+    // Index into the visual order (identical to the model order outside a
+    // drag), so the arrow follows the focused card even while it is being
+    // dragged around.
+    return root.wsVisualIndex(root.focusedWorkspaceId)
   }
   // The arrow only doubles as a close button while it points at an occupied
   // workspace card: sitting over the "+" (empty / new workspace) there is
   // nothing to close, so hovering must not turn it into an "×" either.
   readonly property bool wsArrowCanClose: root.focusedWsIndex >= 0
-  // Absolute x (relative to the strip) of the arrow's centre: the Row is
-  // centred, and every card is effectiveWsCardWidth wide with wsCardGap
-  // between them; workspace i is the (leading cells + i)th cell.
+  // Absolute x (relative to the strip) of the arrow's centre. The row is
+  // centred (wsRowLeft); every cell is effectiveWsCardWidth wide with
+  // wsCardGap between them, and workspace i sits at (leading cells + i).
   readonly property real wsArrowCenterX: {
     var n = root.workspaces.length
     if (n <= 0) return -1
-    var cards = n + root.wsLeadingCells + (root.wsShowNewWs ? 1 : 0)
     var cw = root.effectiveWsCardWidth
     var gap = root.wsCardGap
-    var rowW = cards * cw + (cards - 1) * gap
-    var rowX = (root.stripW - rowW) / 2
     if (root.focusedWsIndex >= 0) {
       // On a used workspace, point at its card.
-      return rowX + (root.wsLeadingCells + root.focusedWsIndex) * (cw + gap) + cw / 2
+      return root.wsRowLeft + (root.wsVisibleLead + root.focusedWsIndex) * (cw + gap) + cw / 2
     }
     // On an empty workspace there is no card for it; point at the "+"
     // new-workspace button (the last cell) so the strip still confirms where
     // the current workspace sits. With the button hidden there is nowhere to
     // point, so the arrow stays away.
-    if (!root.wsShowNewWs) return -1
-    return rowX + (root.wsLeadingCells + n) * (cw + gap) + cw / 2
+    if (!root.wsTrailVisible) return -1
+    return root.wsRowLeft + (root.wsVisibleLead + n) * (cw + gap) + cw / 2
   }
   readonly property int stripY: Math.max(0, panel.height - root.stripH - root.cardBottomMargin)
 
@@ -722,6 +761,9 @@ Item {
     interval: 1500
     onTriggered: {
       root.ready = true
+      // Seed Hyprland's authoritative occupancy so ghost workspaces are hidden
+      // from the very first rebuild.
+      wsOccupancyDebounce.restart()
       // With the bottom-center toggle off the strip must be on screen from the
       // start instead of waiting for a hot-corner trigger.
       if (root.wsAlwaysVisible) root.showWorkspaces()
@@ -793,10 +835,231 @@ Item {
     root.desktopEntries = next
   }
 
-  function refreshMainModel() {
-    root.workspaces = WorkspaceModel.buildWorkspaces()
+  // Build and assign the strip model. `onlyIds` (optional) restricts it to
+  // Hyprland's own occupied set after a reorder; see Workspaces.buildWorkspaces.
+  // This bypasses the drag/lock deferral deliberately: it is only called by the
+  // reorder pipeline, which must paint the corrected model while still locked.
+  function rebuildWorkspaceModel(onlyIds) {
+    root.workspaces = WorkspaceModel.buildWorkspaces(onlyIds)
+    var ids = []
+    for (var i = 0; i < root.workspaces.length; i++) ids.push(Number(root.workspaces[i].id))
+    root.wsVisualOrder = ids
     root.modelDirty = false
     if (root.workspacesOpened && root.workspaces.length === 0 && !root.wsAlwaysVisible) root.hideWorkspaces()
+  }
+
+  function refreshMainModel() {
+    // A rebuild destroys and recreates the Repeater delegates, which would yank
+    // the card the user is dragging out from under the pointer. During a
+    // reorder the Hyprland models are mid-transition, so a rebuild would paint
+    // ghost/empty cards. Defer both cases until things settle.
+    if (root.wsDragging || root.wsReorderLock) { root.modelDirty = true; return }
+    // Quickshell never drops a workspace whose ID Hyprland changed (it does not
+    // handle "changeworkspaceid"), so a renamed workspace lingers as a ghost
+    // alongside its replacement. Hyprland's own occupancy is authoritative:
+    // while a workspace has no windows there, it must not be painted.
+    root.rebuildWorkspaceModel(root.wsOccupancyKnown ? root.wsOccupiedIds : null)
+  }
+
+  // Folds a `hyprctl -j workspaces` result into wsOccupiedIds: the set of
+  // workspace IDs Hyprland reports as holding at least one window. Any ID not
+  // in this set is either empty or a ghost from a change_id and is hidden.
+  function applyWorkspaceOccupancy(text) {
+    var all = []
+    try { all = JSON.parse(text || "[]") } catch (e) { all = [] }
+    if (!Array.isArray(all)) all = []
+    var occ = {}
+    for (var i = 0; i < all.length; i++) {
+      var w = all[i]
+      var id = Number(w && w.id)
+      if (!isFinite(id)) continue
+      if (Number(w && w.windows) > 0) occ[id] = true
+    }
+    root.wsOccupiedIds = occ
+    root.wsOccupancyKnown = true
+    root.refreshMainModel()
+  }
+
+  // ---- Workspace drag-reorder -------------------------------------------
+  // Index of a workspace ID in the current visual order (-1 when absent).
+  function wsVisualIndex(id) {
+    if (id === null || id === undefined) return -1
+    var arr = root.wsVisualOrder
+    for (var i = 0; i < arr.length; i++) {
+      if (Number(arr[i]) === Number(id)) return i
+    }
+    return -1
+  }
+
+  // Left edge of cell `i` (0 = first launcher/workspace cell) inside the row.
+  function wsCellX(i) {
+    return i * (root.effectiveWsCardWidth + root.wsCardGap)
+  }
+
+  function wsDragBegin(ws) {
+    if (!ws || !root.ready) return
+    // Special workspaces (negative IDs) are not reorderable.
+    if (Number(ws.id) < 0) return
+    // Do not start a fresh drag while the previous reorder is still settling.
+    if (root.wsReorderLock) return
+    root.wsDragging = true
+    root.wsDragMoved = false
+    root.wsDragCurrentVisual = root.wsVisualIndex(ws.id)
+  }
+
+  // Translate a pointer position on `cardItem` into a row-local x and, when it
+  // has crossed into another slot, bubble the dragged card to that slot.
+  function wsDragUpdate(cardItem, localX, localY) {
+    if (!root.wsDragging) return
+    var pt = cardItem.mapToItem(stripRow, localX, localY)
+    var target = root.wsDropTargetVisual(pt.x)
+    if (target >= 0 && target !== root.wsDragCurrentVisual) {
+      root.wsDragMoved = true
+      root.wsMoveVisual(root.wsDragCurrentVisual, target)
+      root.wsDragCurrentVisual = target
+    }
+  }
+
+  function wsDragEnd() {
+    if (!root.wsDragging) return
+    var moved = root.wsDragMoved
+    root.wsDragging = false
+    root.wsDragCurrentVisual = -1
+    if (moved) { root.commitWorkspaceReorder(); wsDragFlagTimer.restart() }
+    else if (root.modelDirty) root.refreshMainModel()
+  }
+
+  // Nearest card slot to a row-local x, clamped to the card range. Used as the
+  // "swap on hover" target while dragging.
+  function wsDropTargetVisual(x) {
+    var n = root.workspaces.length
+    if (n <= 0) return -1
+    var step = root.effectiveWsCardWidth + root.wsCardGap
+    var rel = x - root.wsCellX(root.wsVisibleLead)
+    var idx = Math.floor(rel / step + 0.5)
+    return Math.max(0, Math.min(n - 1, idx))
+  }
+
+  // Move one element of the visual order (the array backing the live layout).
+  function wsMoveVisual(from, to) {
+    if (from < 0 || to < 0 || from === to) return
+    var arr = root.wsVisualOrder.slice()
+    if (from >= arr.length || to >= arr.length) return
+    var item = arr.splice(from, 1)[0]
+    arr.splice(to, 0, item)
+    root.wsVisualOrder = arr
+  }
+
+  // Freeze the model, read the live workspace set (so renames never target an
+  // ID that is in use), then apply the renames in one compositor request.
+  function commitWorkspaceReorder() {
+    root.wsReorderLock = true
+    root.wsReorderFinalizePasses = 0
+    wsReorderWatchdog.restart()
+    wsReorderProbe.running = true
+  }
+
+  // Turn the visual order into the smallest set of workspace ID renames and
+  // apply them. Empty workspaces squatting on a target ID (and every changing
+  // origin) are first parked on a high temporary ID, then landed on their final
+  // ID; nothing ever targets an in-use ID. The strip keeps showing the dragged
+  // order (the lock blocks rebuilds) until the settle pipeline below runs.
+  function applyWorkspaceReorder(text) {
+    var all = []
+    try { all = JSON.parse(text || "[]") } catch (e) { all = [] }
+    if (!Array.isArray(all)) all = []
+    var occupied = {}
+    var maxId = 0
+    for (var i = 0; i < all.length; i++) {
+      var id = Number(all[i] && all[i].id)
+      if (!isFinite(id)) continue
+      occupied[id] = true
+      if (id > maxId) maxId = id
+    }
+
+    var order = []
+    for (var o = 0; o < root.wsVisualOrder.length; o++) order.push(Number(root.wsVisualOrder[o]))
+    var result = WorkspaceReorder.computePlan(order)
+    var plan = result.plan
+    if (!plan || plan.length === 0) {
+      // Nothing to rename: end the freeze and show the (unchanged) state.
+      wsReorderWatchdog.stop()
+      root.wsReorderLock = false
+      root.refreshMainModel()
+      return
+    }
+
+    var origins = {}
+    var targets = {}
+    for (var p = 0; p < plan.length; p++) {
+      origins[plan[p].from] = true
+      targets[plan[p].to] = true
+      if (plan[p].from > maxId) maxId = plan[p].from
+      if (plan[p].to > maxId) maxId = plan[p].to
+    }
+
+    var lua = ""
+    var freeId = maxId + 1
+    for (var t in targets) {
+      var tid = Number(t)
+      if (occupied[tid] && !origins[tid]) {
+        lua += 'pcall(hl.dispatch, hl.dsp.workspace.change_id({ workspace = "' + tid + '", id = ' + freeId + ' })) '
+        freeId++
+      }
+    }
+    var staged = []
+    for (var q = 0; q < plan.length; q++) {
+      var tmp = freeId++
+      lua += 'pcall(hl.dispatch, hl.dsp.workspace.change_id({ workspace = "' + plan[q].from + '", id = ' + tmp + ' })) '
+      staged.push({ tmp: tmp, to: plan[q].to })
+    }
+    for (var s = 0; s < staged.length; s++) {
+      lua += 'pcall(hl.dispatch, hl.dsp.workspace.change_id({ workspace = "' + staged[s].tmp + '", id = ' + staged[s].to + ' })) '
+    }
+    Quickshell.execDetached(["hyprctl", "eval", lua])
+    wsReorderSettleTimer.restart()
+  }
+
+  // Final pass: rebuild the strip against Hyprland's own occupancy (windows>0).
+  // A workspace Quickshell still reports with stale toplevels but Hyprland says
+  // is empty is dropped, so an empty card can never be painted. Because
+  // Quickshell does not handle "changeworkspaceid", the renamed workspace only
+  // appears after a few refresh cycles; the pass count bounds the retries.
+  function finalizeWorkspaceReorder(text) {
+    var all = []
+    try { all = JSON.parse(text || "[]") } catch (e) { all = [] }
+    if (!Array.isArray(all)) all = []
+    var occupied = {}
+    for (var i = 0; i < all.length; i++) {
+      var w = all[i]
+      var id = Number(w && w.id)
+      if (!isFinite(id)) continue
+      if (Number(w && w.windows) > 0) occupied[id] = true
+    }
+    // Keep the authoritative set fresh for subsequent normal rebuilds.
+    root.wsOccupiedIds = occupied
+    root.wsOccupancyKnown = true
+    root.rebuildWorkspaceModel(occupied)
+    // Quickshell does not handle Hyprland's "changeworkspaceid" event, so a
+    // renamed workspace only shows up after refreshWorkspaces/refreshToplevels
+    // have caught up (asynchronously). Keep refreshing and re-probing until
+    // every occupied workspace is actually present, then release the lock.
+    var missing = false
+    for (var key in occupied) {
+      var found = false
+      for (var h = 0; h < root.workspaces.length; h++) {
+        if (Number(root.workspaces[h].id) === Number(key)) { found = true; break }
+      }
+      if (!found) missing = true
+    }
+    root.wsReorderFinalizePasses++
+    if (missing && root.wsReorderFinalizePasses < 8) {
+      wsReorderOccupancyRetryTimer.restart()
+    } else {
+      wsReorderWatchdog.stop()
+      root.wsReorderLock = false
+      if (root.modelDirty) root.refreshMainModel()
+    }
   }
 
   function requestGeometryRefresh() {
@@ -919,6 +1182,90 @@ Item {
     onTriggered: root.showWorkspaces()
   }
 
+  // ---- Reorder pipeline --------------------------------------------------
+  // Renames settle asynchronously, so the model is only trustworthy after the
+  // deferred pipeline below has let Hyprland catch up and has been re-checked
+  // against Hyprland's own occupancy.
+  Process {
+    id: wsReorderProbe
+    command: ["hyprctl", "-j", "workspaces"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyWorkspaceReorder(text)
+    }
+  }
+  Process {
+    id: wsReorderOccupancyProbe
+    command: ["hyprctl", "-j", "workspaces"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.finalizeWorkspaceReorder(text)
+    }
+  }
+  // Let the compositor apply the renames and queue its events.
+  Timer {
+    id: wsReorderSettleTimer
+    interval: 300
+    onTriggered: {
+      if (typeof Hyprland.refreshWorkspaces === "function") Hyprland.refreshWorkspaces()
+      Hyprland.refreshToplevels()
+      wsReorderRefreshTimer.restart()
+    }
+  }
+  // Give the refreshed models a moment to populate, then read occupancy.
+  Timer {
+    id: wsReorderRefreshTimer
+    interval: 150
+    onTriggered: wsReorderOccupancyProbe.running = true
+  }
+  // Keep refreshing the Hyprland models until the renamed workspace shows up,
+  // then read occupancy again. Quickshell misses "changeworkspaceid", so this
+  // can take a couple of cycles; the finalize pass count bounds the retries.
+  Timer {
+    id: wsReorderOccupancyRetryTimer
+    interval: 200
+    onTriggered: {
+      if (typeof Hyprland.refreshWorkspaces === "function") Hyprland.refreshWorkspaces()
+      Hyprland.refreshToplevels()
+      wsReorderOccupancyProbe.running = true
+    }
+  }
+  // Clears the "a drag just happened" flag shortly after it is set, so a
+  // release that never produces a click cannot leave the next click swallowed.
+  Timer {
+    id: wsDragFlagTimer
+    interval: 250
+    onTriggered: root.wsDragMoved = false
+  }
+  // Safety net: if a probe never reports (hyprctl missing, process error) the
+  // lock must still be released, or the strip would never rebuild again.
+  Timer {
+    id: wsReorderWatchdog
+    interval: 2500
+    onTriggered: {
+      if (!root.wsReorderLock) return
+      root.wsReorderLock = false
+      root.refreshMainModel()
+    }
+  }
+  // Continuous authoritative occupancy: a debounced `hyprctl -j workspaces`
+  // read after any Hyprland event keeps wsOccupiedIds current, so ghost
+  // workspaces left by a change_id are filtered out of every normal rebuild,
+  // not just the reorder finalize.
+  Timer {
+    id: wsOccupancyDebounce
+    interval: 80
+    onTriggered: { if (!wsOccupancyProbe.running) wsOccupancyProbe.running = true }
+  }
+  Process {
+    id: wsOccupancyProbe
+    command: ["hyprctl", "-j", "workspaces"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyWorkspaceOccupancy(text)
+    }
+  }
+
   // Track the Omarchy screensaver windows (class org.omarchy.screensaver) so
   // the strip can hide while the blackout is up and restore itself afterwards.
   function trackScreensaverWindows(event, name) {
@@ -981,6 +1328,13 @@ Item {
       var name = String(event && event.name ? event.name : "")
       root.trackScreensaverWindows(event, name)
       if (!root.ready) return
+      // Swallow the storm of workspace events a reorder produces: rebuilding now
+      // would sample the models mid-rename (ghosts, empties, a momentarily
+      // missing focused workspace). The settle pipeline refreshes once instead.
+      if (root.wsReorderLock) return
+      // Anything that can change which workspaces hold windows refreshes the
+      // authoritative occupancy (debounced), which suppresses Quickshell ghosts.
+      if (root.wsOccupancyEvents.indexOf(name) !== -1) wsOccupancyDebounce.restart()
       var geometryEvent = ["movewindow", "moveworkspace", "openwindow", "closewindow", "changefloatingmode", "fullscreen", "pin", "minimize"].indexOf(name) !== -1
       var modelEvent = geometryEvent || name === "renameworkspace" || name === "urgent"
       if (!modelEvent) return
@@ -1226,22 +1580,27 @@ Item {
         }
       }
 
-      Row {
+      // Laid out manually (not a Row) so a card can slide between slots during
+      // a drag without the Repeater recreating its delegate and dropping the
+      // mouse grab. Each child is placed at wsCellX(index).
+      Item {
         id: stripRow
         anchors.top: parent.top
         anchors.topMargin: root.wsOuterPad
-        anchors.horizontalCenter: parent.horizontalCenter
-        spacing: root.wsCardGap
+        x: root.wsRowLeft
+        width: root.wsRowWidth
+        height: root.wsCardPreviewH
 
         // App launcher card: left-click opens this plugin's own smart app menu
         // (same app list and search as the Omarchy menu, ordered by use), and
         // right-click opens a terminal.
         Item {
+          x: root.wsCellX(0)
           width: root.effectiveWsCardWidth
           height: root.wsCardPreviewH
           // The pinned strip shows the launcher cell even with no windows on
           // screen; the transient strip only appears with cards to render.
-          visible: root.wsShowAppMenu && (root.wsAlwaysVisible || root.workspaces.length > 0)
+          visible: root.wsAppMenuVisible
 
           // Solid app-grid glyph (fa-th, U+F00A) from Font Awesome 7 Free --
           // the family this strip already falls back to for its icons. No
@@ -1287,9 +1646,10 @@ Item {
         }
 
         Item {
+          x: root.wsCellX(root.wsShowAppMenu ? 1 : 0)
           width: root.effectiveWsCardWidth
           height: root.wsCardPreviewH
-          visible: root.wsShowOmafile && (root.wsAlwaysVisible || root.workspaces.length > 0)
+          visible: root.wsOmafileVisible
 
           Text {
             width: root.effectiveWsCardWidth
@@ -1326,6 +1686,12 @@ Item {
             required property var modelData
 
             width: root.effectiveWsCardWidth
+            // Position by visual slot; during a drag only wsVisualOrder changes,
+            // so the delegate survives and this x animates it to its new slot.
+            x: root.wsCellX(root.wsVisibleLead + Math.max(0, root.wsVisualIndex(modelData.id)))
+            Behavior on x {
+              NumberAnimation { duration: root.effectivePanelAnimMs; easing.type: Easing.OutCubic }
+            }
 
             ws: modelData
             shell: root.shell
@@ -1338,9 +1704,10 @@ Item {
         }
 
         Item {
+          x: root.wsCellX(root.wsVisibleLead + root.workspaces.length)
           width: root.effectiveWsCardWidth
           height: root.wsCardPreviewH
-          visible: root.wsShowNewWs && root.workspaces.length > 0
+          visible: root.wsTrailVisible
 
           Rectangle {
             anchors.centerIn: parent
@@ -2281,12 +2648,28 @@ Item {
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
         acceptedButtons: Qt.LeftButton | Qt.RightButton
+        // Left press starts a possible reorder drag; if the pointer then crosses
+        // into another slot the cards swap live (see root.wsDragUpdate). A
+        // plain click (no slot change) still activates the workspace.
+        onPressed: function(mouse) {
+          if (mouse.button === Qt.LeftButton) root.wsDragBegin(wcard.ws)
+        }
+        onPositionChanged: function(mouse) {
+          if (!pressed) return
+          if (mouse.buttons & Qt.LeftButton) root.wsDragUpdate(wcard, mouse.x, mouse.y)
+        }
+        onReleased: function(mouse) {
+          if (mouse.button === Qt.LeftButton) root.wsDragEnd()
+        }
         onClicked: function(mouse) {
           if (mouse.button === Qt.RightButton) {
             root.openWsWindowMenu(wcard.ws, mouse)
             mouse.accepted = true
             return
           }
+          // Swallow the click that ends a drag: the cards already moved and the
+          // pointer is no longer over the workspace it was pressed on.
+          if (root.wsDragMoved) { root.wsDragMoved = false; mouse.accepted = true; return }
           wcard.activate(wcard.ws)
           mouse.accepted = true
         }
